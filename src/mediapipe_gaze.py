@@ -43,11 +43,11 @@ def start_tracker():
     if is_tracking: 
         return 
 
-    # Setup files and camera
+    # Setup files and camera - Added blink_status to the CSV header
     log_path = os.path.join(script_dir, "..", "logs", "gaze_log.csv")
     log_file = open(log_path, mode="w", newline="")
     csv_writer = csv.writer(log_file)
-    csv_writer.writerow(["timestamp", "gaze_direction", "yawn_status", "face_detected"])
+    csv_writer.writerow(["timestamp", "gaze_direction", "yawn_status", "blink_status", "face_detected"])
     
     landmarker = FaceLandmarker.create_from_options(options)
     cap = cv2.VideoCapture(0)
@@ -72,6 +72,7 @@ def process_frame():
 
         gaze_direction = "Unknown"
         yawn_status = "No"
+        blink_status = "Open"
         face_detected = 0
 
         if results.face_landmarks:
@@ -99,16 +100,26 @@ def process_frame():
                 else:
                     gaze_direction = "Center"
 
+            # Blink Detection Logic
+            eye_top = face_landmarks[159]
+            eye_bot = face_landmarks[145]
+            
+            # Calculate vertical distance between eyelids
+            eye_open_dist = abs(eye_top.y - eye_bot.y)
+            
+            # Threshold for closed eyes (tune this if needed)
+            if eye_open_dist < 0.015:
+                blink_status = "Closed"
+
             # Yawn Detection Logic
             top_lip = face_landmarks[13]
             bot_lip = face_landmarks[14]
             
-            # Calculate vertical distance between inner lips
             mouth_open_dist = abs(top_lip.y - bot_lip.y)
             
             if mouth_open_dist > 0.05: 
                 if yawn_start_time is None:
-                    yawn_start_time = timestamp # Start the clock
+                    yawn_start_time = timestamp 
                 
                 if (timestamp - yawn_start_time) > 0.8:
                     yawn_status = "YAWNING"
@@ -116,16 +127,19 @@ def process_frame():
             else:
                 yawn_start_time = None
 
-            # Draw iris point
+            # Drawing Visuals
             cv2.circle(frame, (iris_x, int(left_iris.y * h)), 3, (0, 255, 0), -1)
             
-            # Draw Yawn Alert if triggered
             if yawn_status == "YAWNING":
                 cv2.putText(frame, "YAWN DETECTED", (30, 70), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                            
+            if blink_status == "Closed":
+                cv2.putText(frame, "EYES CLOSED", (30, 110), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
 
         # Log to CSV
-        csv_writer.writerow([timestamp, gaze_direction, yawn_status, face_detected])
+        csv_writer.writerow([timestamp, gaze_direction, yawn_status, blink_status, face_detected])
 
         # Display gaze direction
         cv2.putText(frame, f"Gaze: {gaze_direction}",
