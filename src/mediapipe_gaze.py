@@ -47,7 +47,7 @@ def start_tracker():
     log_path = os.path.join(script_dir, "..", "logs", "gaze_log.csv")
     log_file = open(log_path, mode="w", newline="")
     csv_writer = csv.writer(log_file)
-    csv_writer.writerow(["timestamp", "gaze_direction", "yawn_status", "blink_status", "face_detected", "ear_value"])
+    csv_writer.writerow(["timestamp", "gaze_direction", "yawn_status", "blink_status", "face_detected", "ear_value", "mar_value"])
     
     landmarker = FaceLandmarker.create_from_options(options)
     cap = cv2.VideoCapture(0)
@@ -75,6 +75,7 @@ def process_frame():
         blink_status = "Open"
         face_detected = 0
         ear = 0.0
+        mar = 0.0
 
         if results.face_landmarks:
             face_detected = 1
@@ -120,19 +121,26 @@ def process_frame():
             if ear < 0.21:
                 blink_status = "Closed"
 
-            # Yawn Detection Logic
-            top_lip = face_landmarks[13]
-            bot_lip = face_landmarks[14]
+            # MAR(Mouth Aspect Ratio) Logic
+            # Vertical inner lips
+            p13, p14 = face_landmarks[13], face_landmarks[14]
+            # Horizontal mouth corners
+            p61, p291 = face_landmarks[61], face_landmarks[291]
+
+            # Calculate 2D Euclidean distances for mouth
+            dist_mouth_v = ((p13.x - p14.x)**2 + (p13.y - p14.y)**2)**0.5
+            dist_mouth_h = ((p61.x - p291.x)**2 + (p61.y - p291.y)**2)**0.5
+
+            if dist_mouth_h > 0:
+                mar = dist_mouth_v / dist_mouth_h
             
-            mouth_open_dist = abs(top_lip.y - bot_lip.y)
-            
-            if mouth_open_dist > 0.05: 
+            # Threshold for yawning
+            if mar > 0.5: 
                 if yawn_start_time is None:
                     yawn_start_time = timestamp 
                 
-                if (timestamp - yawn_start_time) > 0.8:
+                if (timestamp - yawn_start_time) > 4:
                     yawn_status = "YAWNING"
-
             else:
                 yawn_start_time = None
 
@@ -147,8 +155,8 @@ def process_frame():
                 cv2.putText(frame, "EYES CLOSED", (30, 110), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
 
-        # Log to CSV (EAR added)
-        csv_writer.writerow([timestamp, gaze_direction, yawn_status, blink_status, face_detected, round(ear, 3)])
+        # Log to CSV (EAR and MAR added)
+        csv_writer.writerow([timestamp, gaze_direction, yawn_status, blink_status, face_detected, round(ear, 3), round(mar, 3)])
 
         # Display gaze direction
         cv2.putText(frame, f"Gaze: {gaze_direction}",
