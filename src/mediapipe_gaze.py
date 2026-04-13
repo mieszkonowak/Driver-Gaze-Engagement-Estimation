@@ -43,11 +43,11 @@ def start_tracker():
     if is_tracking: 
         return 
 
-    # Setup files and camera - Added blink_status to the CSV header
+    # Setup files and camera
     log_path = os.path.join(script_dir, "..", "logs", "gaze_log.csv")
     log_file = open(log_path, mode="w", newline="")
     csv_writer = csv.writer(log_file)
-    csv_writer.writerow(["timestamp", "gaze_direction", "yawn_status", "blink_status", "face_detected"])
+    csv_writer.writerow(["timestamp", "gaze_direction", "yawn_status", "blink_status", "face_detected", "ear_value"])
     
     landmarker = FaceLandmarker.create_from_options(options)
     cap = cv2.VideoCapture(0)
@@ -74,6 +74,7 @@ def process_frame():
         yawn_status = "No"
         blink_status = "Open"
         face_detected = 0
+        ear = 0.0
 
         if results.face_landmarks:
             face_detected = 1
@@ -100,15 +101,23 @@ def process_frame():
                 else:
                     gaze_direction = "Center"
 
-            # Blink Detection Logic
-            eye_top = face_landmarks[159]
-            eye_bot = face_landmarks[145]
-            
-            # Calculate vertical distance between eyelids
-            eye_open_dist = abs(eye_top.y - eye_bot.y)
-            
-            # Threshold for closed eyes (tune this if needed)
-            if eye_open_dist < 0.015:
+            # EAR(Eye Aspect Ratio) Logic
+            # Vertical landmarks
+            p159, p145 = face_landmarks[159], face_landmarks[145]
+            p158, p144 = face_landmarks[158], face_landmarks[144]
+            # Horizontal landmarks
+            p33, p133 = face_landmarks[33], face_landmarks[133]
+
+            # Calculate 2D Euclidean distances
+            dist_v1 = ((p159.x - p145.x)**2 + (p159.y - p145.y)**2)**0.5
+            dist_v2 = ((p158.x - p144.x)**2 + (p158.y - p144.y)**2)**0.5
+            dist_h = ((p33.x - p133.x)**2 + (p33.y - p133.y)**2)**0.5
+
+            if dist_h > 0:
+                ear = (dist_v1 + dist_v2) / (2.0 * dist_h)
+
+            # Threshold for closed eyes 
+            if ear < 0.21:
                 blink_status = "Closed"
 
             # Yawn Detection Logic
@@ -138,8 +147,8 @@ def process_frame():
                 cv2.putText(frame, "EYES CLOSED", (30, 110), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
 
-        # Log to CSV
-        csv_writer.writerow([timestamp, gaze_direction, yawn_status, blink_status, face_detected])
+        # Log to CSV (EAR added)
+        csv_writer.writerow([timestamp, gaze_direction, yawn_status, blink_status, face_detected, round(ear, 3)])
 
         # Display gaze direction
         cv2.putText(frame, f"Gaze: {gaze_direction}",
@@ -167,9 +176,7 @@ def stop_tracker():
     
     video_label.configure(image='')
 
-
 ### Tkinter interface ###
-
 root = tk.Tk()
 root.title("Gaze and Engagement Tracker")
 root.geometry("800x600") 
