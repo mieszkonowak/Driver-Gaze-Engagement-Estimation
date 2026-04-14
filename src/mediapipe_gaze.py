@@ -33,12 +33,16 @@ csv_writer = None
 is_tracking = False
 yawn_start_time = None
 yawn_triggered = False
+perclos_buffer = []
+tracker_start_time = None
 
 def start_tracker():
-    global cap, landmarker, log_file, csv_writer, is_tracking, yawn_start_time, yawn_triggered
+    global cap, landmarker, log_file, csv_writer, is_tracking, yawn_start_time, yawn_triggered, perclos_buffer, tracker_start_time
 
     yawn_start_time = None
     yawn_triggered = False
+    perclos_buffer = [] 
+    tracker_start_time = time.time() 
     
     if is_tracking: 
         return 
@@ -47,7 +51,7 @@ def start_tracker():
     log_path = os.path.join(script_dir, "..", "logs", "gaze_log.csv")
     log_file = open(log_path, mode="w", newline="")
     csv_writer = csv.writer(log_file)
-    csv_writer.writerow(["timestamp", "gaze_direction", "yawn_status", "blink_status", "face_detected", "ear_value", "mar_value"])
+    csv_writer.writerow(["timestamp", "gaze_direction", "yawn_status", "blink_status", "face_detected", "ear_value", "mar_value", "perclos_score"])
     
     landmarker = FaceLandmarker.create_from_options(options)
     cap = cv2.VideoCapture(0)
@@ -56,7 +60,7 @@ def start_tracker():
     process_frame()
 
 def process_frame():
-    global cap, landmarker, log_file, csv_writer, is_tracking, yawn_start_time, yawn_triggered
+    global cap, landmarker, log_file, csv_writer, is_tracking, yawn_start_time, yawn_triggered, perclos_buffer, tracker_start_time
 
     if not is_tracking:
         return 
@@ -76,6 +80,7 @@ def process_frame():
         face_detected = 0
         ear = 0.0
         mar = 0.0
+        perclos_score = 0.0
 
         if results.face_landmarks:
             face_detected = 1
@@ -103,13 +108,10 @@ def process_frame():
                     gaze_direction = "Center"
 
             # EAR(Eye Aspect Ratio) Logic
-            # Vertical landmarks
             p159, p145 = face_landmarks[159], face_landmarks[145]
             p158, p144 = face_landmarks[158], face_landmarks[144]
-            # Horizontal landmarks
             p33, p133 = face_landmarks[33], face_landmarks[133]
 
-            # Calculate 2D Euclidean distances
             dist_v1 = ((p159.x - p145.x)**2 + (p159.y - p145.y)**2)**0.5
             dist_v2 = ((p158.x - p144.x)**2 + (p158.y - p144.y)**2)**0.5
             dist_h = ((p33.x - p133.x)**2 + (p33.y - p133.y)**2)**0.5
@@ -117,17 +119,34 @@ def process_frame():
             if dist_h > 0:
                 ear = (dist_v1 + dist_v2) / (2.0 * dist_h)
 
-            # Threshold for closed eyes 
-            if ear < 0.21:
+            # Determine if eye is closed for this specific frame
+            is_closed = 1 if ear < 0.25 else 0
+            
+            if is_closed:
                 blink_status = "Closed"
 
+            # PERCLOS Logic (Dinges & Grace, 1998 / Gao et al., 2014)
+            # 1. Append current state with a timestamp
+            perclos_buffer.append((timestamp, is_closed))
+
+            # 2. Remove any frames older than 60 seconds
+            while len(perclos_buffer) > 0 and (timestamp - perclos_buffer[0][0]) > 60.0:
+                perclos_buffer.pop(0)
+
+            # 3. Calculate the percentage of closed frames in the 60s window
+            if len(perclos_buffer) > 0:
+                closed_frames = sum(state for _, state in perclos_buffer)
+                perclos_score = closed_frames / len(perclos_buffer)
+
+            # 4. Trigger fatigue warning if threshold > 15% AND 60s grace period is over
+            elapsed_time = timestamp - tracker_start_time
+            if elapsed_time > 60.0 and perclos_score > 0.15:
+                blink_status = "FATIGUE (PERCLOS)"
+
             # MAR(Mouth Aspect Ratio) Logic
-            # Vertical inner lips
             p13, p14 = face_landmarks[13], face_landmarks[14]
-            # Horizontal mouth corners
             p61, p291 = face_landmarks[61], face_landmarks[291]
 
-            # Calculate 2D Euclidean distances for mouth
             dist_mouth_v = ((p13.x - p14.x)**2 + (p13.y - p14.y)**2)**0.5
             dist_mouth_h = ((p61.x - p291.x)**2 + (p61.y - p291.y)**2)**0.5
 
@@ -154,9 +173,21 @@ def process_frame():
             if blink_status == "Closed":
                 cv2.putText(frame, "EYES CLOSED", (30, 110), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+            elif blink_status == "FATIGUE (PERCLOS)":
+                cv2.putText(frame, "FATIGUE WARNING!", (30, 110), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
 
-        # Log to CSV (EAR and MAR added)
-        csv_writer.writerow([timestamp, gaze_direction, yawn_status, blink_status, face_detected, round(ear, 3), round(mar, 3)])
+            # Display PERCLOS score
+            if elapsed_time <= 60.0:
+                time_left = int(60.0 - elapsed_time)
+                cv2.putText(frame, f"PERCLOS: Calibrating ({time_left}s)", 
+                            (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            else:
+                cv2.putText(frame, f"PERCLOS: {perclos_score*100:.1f}%", 
+                            (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+
+        # Log to CSV
+        csv_writer.writerow([timestamp, gaze_direction, yawn_status, blink_status, face_detected, round(ear, 3), round(mar, 3), round(perclos_score, 3)])
 
         # Display gaze direction
         cv2.putText(frame, f"Gaze: {gaze_direction}",
